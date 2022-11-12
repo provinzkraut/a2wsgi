@@ -9,10 +9,7 @@ import pytest
 from a2wsgi.wsgi import Body, WSGIMiddleware, build_environ
 
 
-def test_body():
-    event_loop = asyncio.new_event_loop()
-    threading.Thread(target=event_loop.run_forever, daemon=True).start()
-
+def test_body(anyio_backend):
     async def receive():
         return {
             "type": "http.request.body",
@@ -27,7 +24,7 @@ Newline.3
 """,
         }
 
-    body = Body(event_loop, receive)
+    body = Body(receive)
     assert body.readline() == b"This is a body test.\n"
     assert body.read(4) == b"Why "
     assert body.readline(2) == b"do"
@@ -163,7 +160,7 @@ async def test_build_environ():
     async def receive():
         raise NotImplementedError
 
-    environ = build_environ(scope, Body(asyncio.get_event_loop(), receive))
+    environ = build_environ(scope, Body(receive))
     environ.pop("wsgi.input")
     environ.pop("asgi.scope")
     assert environ == {
@@ -213,7 +210,7 @@ async def test_build_environ_with_env():
     async def receive():
         raise NotImplementedError
 
-    environ = build_environ(scope, Body(asyncio.get_event_loop(), receive))
+    environ = build_environ(scope, Body(receive))
     environ.pop("wsgi.input")
     environ.pop("asgi.scope")
     assert environ == {

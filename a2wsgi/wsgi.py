@@ -1,17 +1,15 @@
-import asyncio
 import collections
 import os
 import sys
 import typing
-from concurrent.futures import ThreadPoolExecutor
 
 from .types import Environ, Message, Receive, Scope, Send, StartResponse, WSGIApp
+import anyio
 
 
 class Body:
-    def __init__(self, loop: asyncio.AbstractEventLoop, receive: Receive) -> None:
+    def __init__(self, receive: Receive) -> None:
         self.buffer = bytearray()
-        self.loop = loop
         self.receive = receive
         self._has_more = True
 
@@ -24,8 +22,8 @@ class Body:
     def _receive_more_data(self) -> bytes:
         if not self._has_more:
             return b""
-        future = asyncio.run_coroutine_threadsafe(self.receive(), loop=self.loop)
-        message = future.result()
+        with anyio.start_blocking_portal() as portal:
+            message = portal.call(self.receive)
         self._has_more = message.get("more_body", False)
         return message.get("body", b"")
 
@@ -143,15 +141,12 @@ class WSGIMiddleware:
     Convert WSGIApp to ASGIApp.
     """
 
-    def __init__(self, app: WSGIApp, workers: int = 10) -> None:
+    def __init__(self, app: WSGIApp) -> None:
         self.app = app
-        self.executor = ThreadPoolExecutor(
-            thread_name_prefix="WSGI", max_workers=workers
-        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
-            responder = WSGIResponder(self.app, self.executor)
+            responder = WSGIResponder(self.app)
             return await responder(scope, receive, send)
 
         if scope["type"] == "websocket":
@@ -169,38 +164,29 @@ class WSGIMiddleware:
 
 
 class WSGIResponder:
-    def __init__(self, app: WSGIApp, executor: ThreadPoolExecutor) -> None:
+    def __init__(self, app: WSGIApp) -> None:
         self.app = app
-        self.executor = executor
-        self.send_event = asyncio.Event()
+        self.send_event = anyio.Event()
         self.send_queue: typing.Deque[typing.Union[Message, None]] = collections.deque()
-        self.loop = asyncio.get_event_loop()
         self.response_started = False
         self.exc_info: typing.Any = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        body = Body(self.loop, receive)
+        body = Body(receive)
         environ = build_environ(scope, body)
-        sender = None
-        try:
-            sender = self.loop.create_task(self.sender(send))
-            await self.loop.run_in_executor(
-                self.executor, self.wsgi, environ, self.start_response
-            )
+        async with anyio.create_task_group() as tg:
+            with anyio.CancelScope(shield=True):
+                tg.start_soon(self.sender, send)
+                await self.wsgi(environ, self.start_response)
             self.send_queue.append(None)
             self.send_event.set()
-            await asyncio.wait_for(sender, None)
-            if self.exc_info is not None:
-                raise self.exc_info[0].with_traceback(
-                    self.exc_info[1], self.exc_info[2]
-                )
-        finally:
-            if sender and not sender.done():
-                sender.cancel()  # pragma: no cover
+
+        if self.exc_info is not None:
+            raise self.exc_info[0].with_traceback(self.exc_info[1], self.exc_info[2])
 
     def send(self, message: typing.Optional[Message]) -> None:
         self.send_queue.append(message)
-        self.loop.call_soon_threadsafe(self.send_event.set)
+        self.send_event.set()
 
     async def sender(self, send: Send) -> None:
         while True:
@@ -211,7 +197,6 @@ class WSGIResponder:
                 await send(message)
             else:
                 await self.send_event.wait()
-                self.send_event.clear()
 
     def start_response(
         self,
@@ -236,8 +221,8 @@ class WSGIResponder:
                 }
             )
 
-    def wsgi(self, environ: Environ, start_response: StartResponse) -> None:
-        for chunk in self.app(environ, start_response):
+    async def wsgi(self, environ: Environ, start_response: StartResponse) -> None:
+        for chunk in await anyio.to_thread.run_sync(self.app, environ, start_response):
             self.send({"type": "http.response.body", "body": chunk, "more_body": True})
 
         self.send({"type": "http.response.body", "body": b""})
