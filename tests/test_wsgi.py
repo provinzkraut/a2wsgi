@@ -90,8 +90,7 @@ def return_exc_info(environ, start_response):
         return [output]
 
 
-@pytest.mark.asyncio
-async def test_wsgi_get():
+async def test_wsgi_get(anyio_backend):
     app = WSGIMiddleware(hello_world)
     async with httpx.AsyncClient(app=app, base_url="http://testserver") as client:
         response = await client.get("/")
@@ -99,8 +98,7 @@ async def test_wsgi_get():
         assert response.text == "Hello World!\n"
 
 
-@pytest.mark.asyncio
-async def test_wsgi_post():
+async def test_wsgi_post(anyio_backend):
     app = WSGIMiddleware(echo_body)
     async with httpx.AsyncClient(app=app, base_url="http://testserver") as client:
         response = await client.post("/", json={"example": 123})
@@ -108,8 +106,7 @@ async def test_wsgi_post():
         assert response.text == '{"example": 123}'
 
 
-@pytest.mark.asyncio
-async def test_wsgi_exception():
+async def test_wsgi_exception(anyio_backend):
     # Note that we're testing the WSGI app directly here.
     # The HTTP protocol implementations would catch this error and return 500.
     app = WSGIMiddleware(raise_exception)
@@ -118,8 +115,7 @@ async def test_wsgi_exception():
             await client.get("/")
 
 
-@pytest.mark.asyncio
-async def test_wsgi_exc_info():
+async def test_wsgi_exc_info(anyio_backend):
     # Note that we're testing the WSGI app directly here.
     # The HTTP protocol implementations would catch this error and return 500.
     app = WSGIMiddleware(return_exc_info)
@@ -137,8 +133,7 @@ async def test_wsgi_exc_info():
         assert response.text == "Internal Server Error"
 
 
-@pytest.mark.asyncio
-async def test_build_environ():
+async def test_build_environ(anyio_backend):
     scope = {
         "type": "http",
         "http_version": "1.1",
@@ -185,8 +180,7 @@ async def test_build_environ():
     }
 
 
-@pytest.mark.asyncio
-async def test_build_environ_with_env():
+async def test_build_environ_with_env(anyio_backend):
     os.environ["SCRIPT_NAME"] = "/urlprefix"
 
     scope = {
